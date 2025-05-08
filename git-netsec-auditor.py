@@ -37,23 +37,44 @@ def get_direct_commits_to_main(repo, repo_name):
     main_branch = 'main' if 'main' in repo.heads else 'master'
     
     try:
-        # Run the direct commit discovery command that worked in our tests
-        cmd = f'''
-        git log --no-merges {main_branch} --format="%H %an %ad %s" | 
-        grep -v "$(git log --pretty=format:"%H" $(git log --merges --format="%P" | 
-        grep " " | cut -d' ' -f2) 2>/dev/null)" | 
-        grep -v "Merge"
-        '''
+        # Step 1: Get all non-merge commits on main
+        non_merge_cmd = ["git", "log", "--no-merges", main_branch, "--format=%H %an %ad %s"]
+        non_merge_result = subprocess.run(non_merge_cmd, cwd=repo.working_dir, 
+                                        capture_output=True, text=True)
+        all_non_merge_commits = non_merge_result.stdout.strip().split('\n')
         
-        result = subprocess.run(cmd, shell=True, cwd=repo.working_dir, 
-                              capture_output=True, text=True)
+        # Step 2: Get second parents of all merge commits (branch commits that were merged)
+        merge_parents_cmd = ["git", "log", "--merges", "--format=%P"]
+        merge_parents_result = subprocess.run(merge_parents_cmd, cwd=repo.working_dir, 
+                                          capture_output=True, text=True)
         
-        # Handle potential empty results
-        if not result.stdout.strip():
-            print(f"No direct commits found for {repo_name}")
-            return direct_commits
-
-        direct_commits_raw = [line for line in result.stdout.strip().split('\n') if line.strip()]
+        # Extract second parents (branch being merged)
+        branch_parents = []
+        for line in merge_parents_result.stdout.strip().split('\n'):
+            parts = line.strip().split()
+            if len(parts) > 1:
+                branch_parents.append(parts[1])  # Second parent
+        
+        # Step 3: Get all commits that were originally from branches
+        branch_commits = set()
+        for parent in branch_parents:
+            branch_cmd = ["git", "log", "--format=%H", parent]
+            branch_result = subprocess.run(branch_cmd, cwd=repo.working_dir, 
+                                         capture_output=True, text=True)
+            for commit in branch_result.stdout.strip().split('\n'):
+                if commit.strip():
+                    branch_commits.add(commit.strip())
+        
+        # Filter for direct commits (not from branches, not merges)
+        direct_commits_raw = []
+        for line in all_non_merge_commits:
+            if not line.strip():
+                continue
+                
+            # Extract commit hash and check if it's a direct commit
+            commit_hash = line.split(' ', 1)[0]
+            if commit_hash not in branch_commits and "Merge" not in line:
+                direct_commits_raw.append(line)
         
         # Process each commit
         for line in direct_commits_raw:
